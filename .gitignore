@@ -1,0 +1,9 @@
+Data/npy_datas/
+Data/old_npydata/
+Data/testVid/
+Data/__pycache__/
+Data/raw_videos/
+*.pyc
+__pycache__/
+.DS_Store
+venv/
