@@ -10,8 +10,10 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.losses import CategoricalFocalCrossentropy
 
 # --- CẤU HÌNH ---
-DATA_PATH = "npy_datas"
-CLASSES = 30           # Tạm thời huấn luyện 10 từ trước
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "npy_datas")
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+CLASSES = 50           # Tạm thời huấn luyện 10 từ trước
 FRAMES = 50
 FEATURES = 384         # 162 tọa độ + 162 vận tốc
 
@@ -92,9 +94,9 @@ if __name__ == "__main__":
     train_std = np.std(X_train, axis=(0, 1))
 
     # LƯU CẤU HÌNH ĐỂ CHẠY REAL-TIME
-    os.makedirs('model', exist_ok=True)
-    np.save('model/train_mean.npy', train_mean)
-    np.save('model/train_std.npy', train_std)
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    np.save(os.path.join(MODEL_DIR, 'train_mean.npy'), train_mean)
+    np.save(os.path.join(MODEL_DIR, 'train_std.npy'), train_std)
     print("Đã lưu 'train_mean.npy' và 'train_std.npy' vào thư mục model/.")
 
     # Khởi tạo Generators
@@ -133,8 +135,8 @@ if __name__ == "__main__":
     model.summary()
 
     # Callbacks
-    early_stop = EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
-    checkpoint = ModelCheckpoint('model/hybrid_model_30tu.keras', monitor='val_loss', save_best_only=True)
+    early_stop = EarlyStopping(monitor='val_loss', patience=40, restore_best_weights=True)
+    checkpoint = ModelCheckpoint(os.path.join(MODEL_DIR, 'hybrid_model_50tu.keras'), monitor='val_loss', save_best_only=True)
 
     print("4. Bắt đầu huấn luyện...")
     history = model.fit(

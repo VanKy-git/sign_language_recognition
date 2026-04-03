@@ -7,8 +7,9 @@ import os
 from feature_engineering import process_single_video_features
 
 # --- CẤU HÌNH ---
-INPUT_FOLDER = "raw_videos"       # Thư mục chứa video gốc
-OUTPUT_FOLDER = "npy_datas"      # Thư mục sẽ chứa file .npy đã qua xử lý đặc trưng
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_FOLDER = os.path.join(BASE_DIR, "raw_videos")  # Thư mục chứa video gốc
+OUTPUT_FOLDER = os.path.join(BASE_DIR, "npy_datas")  # Thư mục chứa file .npy đã qua xử lý đặc trưng
 TARGET_QTY = 50                    # Số lượng video tối đa mỗi từ
 
 # --- KHỞI TẠO MEDIAPIPE ---
