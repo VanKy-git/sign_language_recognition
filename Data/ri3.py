@@ -38,12 +38,13 @@ def load_actions_from_folders():
 
 ACTIONS = load_actions_from_folders()
 
-MODEL_PATH = 'model/hybrid_model_30tu.keras'
-MEAN_PATH = 'model/train_mean.npy'
-STD_PATH = 'model/train_std.npy'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, 'model', 'hybrid_model_50tu.keras')
+MEAN_PATH = os.path.join(BASE_DIR, 'model', 'train_mean.npy')
+STD_PATH = os.path.join(BASE_DIR, 'model', 'train_std.npy')
 
-# ESP32_URL = "http://10.10.30.179:81/stream"  # Bật dòng này nếu dùng ESP32
-ESP32_URL = 0  # Dùng 0 cho Webcam máy tính để test trước
+ESP32_URL = "http://172.31.99.127:81/stream"  # Bật dòng này nếu dùng ESP32
+# ESP32_URL = 0  # Dùng 0 cho Webcam máy tính để test trước
 
 CONFIDENCE_THRESHOLD = 0.5
 
