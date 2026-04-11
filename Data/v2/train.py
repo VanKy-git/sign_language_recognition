@@ -3,8 +3,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.utils import Sequence, to_categorical
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Bidirectional, LSTM, Dense, Dropout, BatchNormalization
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (Input, Conv1D, MaxPooling1D, Bidirectional, 
+                                     LSTM, Dense, Dropout, BatchNormalization, 
+                                     MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D)
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
@@ -68,27 +70,43 @@ if __name__ == "__main__":
     train_gen = SignLanguageDataGen(X_train, y_train, 32, train_mean, train_std, augment=True)
     val_gen = SignLanguageDataGen(X_val, y_val, 32, train_mean, train_std, augment=False)
 
-    model = Sequential([
-        Conv1D(128, 3, activation='relu', input_shape=(FRAMES, FEATURES)),
-        MaxPooling1D(2),
-        BatchNormalization(),
-        
-        Conv1D(256, 3, activation='relu'),
-        MaxPooling1D(2),
-        BatchNormalization(),
-        Dropout(0.4),
+    # ======================================================================
+    # KIẾN TRÚC MỚI: 1D-CNN + Bi-LSTM + TRANSFORMER (Self-Attention)
+    # ======================================================================
+    inputs = Input(shape=(FRAMES, FEATURES))
+    
+# 1. Khối CNN (Giảm filters xuống 64 -> 128)
+    x = Conv1D(64, 3, activation='relu')(inputs)
+    x = MaxPooling1D(2)(x)
+    x = BatchNormalization()(x)
+    
+    x = Conv1D(128, 3, activation='relu')(x)
+    x = MaxPooling1D(2)(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
 
-        Bidirectional(LSTM(128, return_sequences=True, kernel_regularizer=l2(0.01))),
-        Dropout(0.4),
-        Bidirectional(LSTM(64, return_sequences=False, kernel_regularizer=l2(0.01))),
-        Dropout(0.4),
+    # 2. Khối LSTM (Bỏ bớt 1 lớp LSTM 128, chỉ xài 1 lớp 64)
+    x = Bidirectional(LSTM(64, return_sequences=True, kernel_regularizer=l2(0.01)))(x)
+    x = Dropout(0.4)(x)
 
-        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
-        Dropout(0.5),
-        Dense(num_classes, activation='softmax')
-    ])
+    # 3. Khối TRANSFORMER (Giảm Head xuống 2, Key_dim 32)
+    attn_out = MultiHeadAttention(num_heads=2, key_dim=32)(x, x)
+    x = LayerNormalization()(x + attn_out) 
+    x = GlobalAveragePooling1D()(x)
+
+    # 4. Khối Output
+    x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = Dropout(0.5)(x)
+    outputs = Dense(num_classes, activation='softmax')(x)
+
+    # Khởi tạo mô hình
+    model = Model(inputs=inputs, outputs=outputs)
+    # ======================================================================
 
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
+    
+    # In ra cấu trúc mạng để ông thấy sự xuất hiện của lớp MultiHeadAttention
+    model.summary()
 
     lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, min_lr=1e-6, verbose=1)
     early_stop = EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
