@@ -2,6 +2,7 @@ Data/npy_datas/
 Data/old_npydata/
 Data/testVid/
 Data/npy_datav2/
+Data/leftword/
 Data/api.py
 Data/ri4.py
 Data/server.py

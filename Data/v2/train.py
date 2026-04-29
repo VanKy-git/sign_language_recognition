@@ -9,7 +9,8 @@ from tensorflow.keras.layers import (Input, Conv1D, MaxPooling1D, Bidirectional,
                                      MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D)
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-
+from tensorflow.keras.losses import CategoricalFocalCrossentropy
+from sklearn.metrics import classification_report, confusion_matrix
 # --- CẤU HÌNH ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PATH = os.path.dirname(BASE_DIR)
@@ -103,8 +104,11 @@ if __name__ == "__main__":
     model = Model(inputs=inputs, outputs=outputs)
     # ======================================================================
 
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
-    
+    model.compile(
+        optimizer='adam', 
+        loss=CategoricalFocalCrossentropy(gamma=2.0, alpha=0.25), 
+        metrics=['categorical_accuracy']
+    )    
     # In ra cấu trúc mạng để ông thấy sự xuất hiện của lớp MultiHeadAttention
     model.summary()
 
@@ -117,3 +121,41 @@ if __name__ == "__main__":
     X_test_norm = (X_test - train_mean) / (train_std + 1e-7)
     test_loss, test_acc = model.evaluate(X_test_norm, y_test, batch_size=32)
     print(f"Test Accuracy: {test_acc*100:.2f}%")
+    print("\n======================================================")
+    print("6. BÁO CÁO CHI TIẾT LỖI SAI TỪNG TỪ (CLASSIFICATION REPORT)")
+    print("======================================================")
+    
+    print("Đang chạy dự đoán trên tập Test để phân tích...")
+    # Dự đoán thẳng trên mảng X_test_norm
+    y_pred_probs = model.predict(X_test_norm, batch_size=32, verbose=0)
+    
+    # Lấy index của class có xác suất cao nhất
+    y_pred_classes = np.argmax(y_pred_probs, axis=1)
+    y_true_classes = np.argmax(y_test, axis=1)
+    
+    # Lấy lại danh sách từ vựng theo đúng thứ tự ID
+    target_names = [k for k, v in sorted(label_map.items(), key=lambda item: item[1])]
+    
+    # In báo cáo F1-Score, Recall, Precision
+    report = classification_report(y_true_classes, y_pred_classes, target_names=target_names, zero_division=0)
+    print(report)
+    
+    print("\n--- TÌM CẶP TỪ BỊ NHẦM LẪN NHIỀU NHẤT ---")
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+    confused_pairs = []
+    
+    for i in range(len(target_names)):
+        for j in range(len(target_names)):
+            if i != j and cm[i, j] > 0:
+                confused_pairs.append((target_names[i], target_names[j], cm[i, j]))
+                
+    # Sắp xếp theo số lần nhầm lẫn giảm dần để ưu tiên fix trước
+    confused_pairs.sort(key=lambda x: x[2], reverse=True)
+    
+    if len(confused_pairs) == 0:
+        print("Tuyệt vời! Model không nhầm lẫn cặp từ nào trên tập Test.")
+    else:
+        for pair in confused_pairs:
+            print(f"-> Dấu '{pair[0]}' bị AI đoán nhầm thành '{pair[1]}' ({pair[2]} lần)")
+            
+    print("\n=== HOÀN TẤT HUẤN LUYỆN VÀ ĐÁNH GIÁ ===")
