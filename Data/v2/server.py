@@ -143,7 +143,7 @@ def _local_nlg_worker(keywords: list[str]):
             )
         natural_sentence = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
-        print(f"🤖 KẾT QUẢ DỊCH LOCAL: {natural_sentence}\n")
+        print(f"🤖 KẾT QUẢ DỊCH: {natural_sentence}\n")
         broadcast({"event": "translation_success", "natural_sentence": natural_sentence})
         
     except Exception as exc:
