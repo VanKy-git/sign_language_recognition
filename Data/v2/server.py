@@ -19,11 +19,43 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 # Lõi xử lý đặc trưng 504 features
 from featurev2 import process_single_video_features
+# ============= CẤU HÌNH BỔ SUNG (thêm vào đầu file, sau các config cũ) =============
+import requests
+from gtts import gTTS
+from fastapi.staticfiles import StaticFiles
+
 
 # ============= CẤU HÌNH ĐƯỜNG DẪN & TỪ VỰNG =============
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR     = os.path.dirname(BASE_DIR)
 
+ESP32_IP        = "172.31.99.75"   # <--- đổi IP ESP32 thực tế
+ESP32_PORT      = 82
+SERVER_IP       = "172.31.99.1"   # <--- IP máy chủ Python (để ESP32 kéo file về)
+SERVER_PORT     = 8000
+TTS_DIR         = os.path.join(BASE_DIR, "tts_cache")
+os.makedirs(TTS_DIR, exist_ok=True)
+# ============= HÀM TTS + GỌI ESP32 (thêm sau hàm call_nlg_async) =============
+def speak_on_esp32(sentence: str):
+    """Tạo file MP3 từ câu, serve qua HTTP, gọi ESP32 phát"""
+    try:
+        # 1. Tạo file mp3
+        mp3_path = os.path.join(TTS_DIR, "latest.mp3")
+        tts = gTTS(text=sentence, lang='en')   # đổi 'en' nếu dùng tiếng Anh
+        tts.save(mp3_path)
+        print(f"[TTS] Đã tạo file: {mp3_path}")
+
+        # 2. Gọi ESP32 phát — ESP32 tự kéo file từ server Python
+        audio_url = f"http://{SERVER_IP}:{SERVER_PORT}/tts/latest.mp3"
+        esp32_url = f"http://{ESP32_IP}:{ESP32_PORT}/play?url={audio_url}"
+        resp = requests.get(esp32_url, timeout=5)
+        print(f"[TTS] ESP32 response: {resp.text}")
+
+    except Exception as e:
+        print(f"[TTS ERROR] {e}")
+
+def speak_async(sentence: str):
+    threading.Thread(target=speak_on_esp32, args=(sentence,), daemon=True).start()
 def load_actions_from_folders():
     data_dir = os.path.join(PROJECT_DIR, 'npy_datav2')
     if not os.path.exists(data_dir):
@@ -92,7 +124,7 @@ NLG_MODEL_PATH = os.path.join(PROJECT_DIR, 'model', 't5_sign_model')
 best_ckpt = load_best_checkpoint(NLG_MODEL_PATH)
 
 # ============= CẤU HÌNH CAMERA & NGƯỠNG NHẬN DIỆN =============
-ESP32_URL            = 0     # <--- Nhớ đổi lại IP (VD: "http://192.168.1.47:81/stream") nếu dùng ESP32-CAM
+ESP32_URL            = "http://172.31.99.127:81/stream"    # <--- Nhớ đổi lại IP (VD: "http://192.168.1.47:81/stream") nếu dùng ESP32-CAM
 CONFIDENCE_THRESHOLD = 0.5
 START_THRESHOLD      = 0.065
 STOP_THRESHOLD       = 0.04
@@ -125,31 +157,52 @@ def broadcast(message: dict):
     if _main_loop and not _main_loop.is_closed():
         asyncio.run_coroutine_threadsafe(_broadcast(message), _main_loop)
 
-def _local_nlg_worker(keywords: list[str]):
-    """Hàm chạy ngầm dịch câu bằng model Local T5"""
-    if not keywords: return
+# def _local_nlg_worker(keywords: list[str]):
+#     """Hàm chạy ngầm dịch câu bằng model Local T5"""
+#     if not keywords: return
     
-    kw_string = " ".join(keywords)
+#     kw_string = " ".join(keywords)
+#     input_text = f"keywords to sentence: {kw_string}"
+#     print(f"\n[AI TRANSLATING...] Input: {input_text}")
+    
+#     try:
+#         input_ids = tokenizer(input_text, return_tensors="pt").input_ids.to(device)
+#         with torch.no_grad():
+#             outputs = nlg_model.generate(
+#                 input_ids, 
+#                 max_length=64, 
+#                 num_beams=4
+#             )
+#         natural_sentence = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+#         print(f"🤖 KẾT QUẢ DỊCH: {natural_sentence}\n")
+#         broadcast({"event": "translation_success", "natural_sentence": natural_sentence})
+        
+#     except Exception as exc:
+#         print(f"[LỖI NLG LOCAL] {exc}")
+#         broadcast({"event": "translation_success", "natural_sentence": kw_string})
+# ============= SỬA HÀM _local_nlg_worker (thêm 1 dòng cuối) =============
+def _local_nlg_worker(keywords: list[str]):
+    if not keywords: return
+    kw_string  = " ".join(keywords)
     input_text = f"keywords to sentence: {kw_string}"
     print(f"\n[AI TRANSLATING...] Input: {input_text}")
     
     try:
         input_ids = tokenizer(input_text, return_tensors="pt").input_ids.to(device)
         with torch.no_grad():
-            outputs = nlg_model.generate(
-                input_ids, 
-                max_length=64, 
-                num_beams=4
-            )
+            outputs = nlg_model.generate(input_ids, max_length=64, num_beams=4)
         natural_sentence = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
         print(f"🤖 KẾT QUẢ DỊCH: {natural_sentence}\n")
         broadcast({"event": "translation_success", "natural_sentence": natural_sentence})
-        
+        speak_async(natural_sentence)   # ← thêm dòng này
+
     except Exception as exc:
         print(f"[LỖI NLG LOCAL] {exc}")
-        broadcast({"event": "translation_success", "natural_sentence": kw_string})
-
+        fallback = kw_string
+        broadcast({"event": "translation_success", "natural_sentence": fallback})
+        speak_async(fallback)           # ← thêm dòng này
 def call_nlg_async(keywords: list[str]):
     threading.Thread(target=_local_nlg_worker, args=(keywords,), daemon=True).start()
 
@@ -379,7 +432,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
+app.mount("/tts", StaticFiles(directory=TTS_DIR), name="tts")
 @app.websocket("/ws/sign-language")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()

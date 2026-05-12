@@ -34,7 +34,8 @@ def predict(keywords):
 
 tests = [
     # ===== CO BAN =====
-    "me cold need medicine",
+    "what name",
+    "you name"
 ]
 
 print("\n=== KET QUA ===")
