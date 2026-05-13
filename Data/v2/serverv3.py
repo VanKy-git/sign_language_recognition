@@ -28,9 +28,9 @@ from fastapi.staticfiles import StaticFiles
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 
-ESP32_IP    = "192.168.1.26"
+ESP32_IP    = "10.10.49.144"
 ESP32_PORT  = 82
-SERVER_IP   = "192.168.2.76"
+SERVER_IP   = "10.10.49.146"
 SERVER_PORT = 8000
 TTS_DIR     = os.path.join(BASE_DIR, "tts_cache")
 os.makedirs(TTS_DIR, exist_ok=True)
@@ -62,7 +62,7 @@ def speak_on_esp32(sentence: str):
 
         audio_url = f"http://{SERVER_IP}:{SERVER_PORT}/tts/latest.mp3"
         esp32_url = f"http://{ESP32_IP}:{ESP32_PORT}/play?url={audio_url}"
-        resp = requests.get(esp32_url, timeout=5)
+        resp = requests.get(esp32_url, timeout=10)
         print(f"[TTS] ESP32 response: {resp.text}")
     except Exception as e:
         print(f"[TTS ERROR] {e}")
