@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (Input, Conv1D, MaxPooling1D, Bidirectional, 
                                      LSTM, Dense, Dropout, BatchNormalization, 
-                                     MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D)
+                                     MultiHeadAttention, LayerNormalization, Flatten)
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.losses import CategoricalFocalCrossentropy
@@ -48,9 +48,11 @@ class SignLanguageDataGen(Sequence):
 
         if self.augment:
             for i in range(len(X_batch)):
-                scale_factor = np.random.uniform(0.85, 1.15)
+                scale_factor = np.random.uniform(0.75, 1.25)
                 X_batch[i] = X_batch[i] * scale_factor
-                X_batch[i] += np.random.normal(0, 0.005, X_batch[i].shape)
+                X_batch[i] += np.random.normal(0, 0.015, X_batch[i].shape)
+                shift = np.random.randint(-6, 6)
+                X_batch[i] = np.roll(X_batch[i], shift, axis=0)
 
         return (X_batch - self.mean) / (self.std + 1e-7), y_batch
 
@@ -93,11 +95,15 @@ if __name__ == "__main__":
     # 3. Khối TRANSFORMER (Giảm Head xuống 2, Key_dim 32)
     attn_out = MultiHeadAttention(num_heads=2, key_dim=32)(x, x)
     x = LayerNormalization()(x + attn_out) 
-    x = GlobalAveragePooling1D()(x)
+    x = Flatten()(x)
 
     # 4. Khối Output
-    x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = BatchNormalization()(x)
     x = Dropout(0.5)(x)
+
+    x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(x)
+    x = Dropout(0.4)(x)
     outputs = Dense(num_classes, activation='softmax')(x)
 
     # Khởi tạo mô hình

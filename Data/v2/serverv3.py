@@ -6,13 +6,16 @@ import asyncio
 import time
 import os
 import re
+import socket
 import queue
+import hashlib
 import urllib.parse
 from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from tensorflow.keras.models import load_model
 
 import torch
@@ -23,49 +26,90 @@ from featurev2 import process_single_video_features
 import requests
 from gtts import gTTS
 from fastapi.staticfiles import StaticFiles
+from pydub import AudioSegment
 
 # ============= CẤU HÌNH =============
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 
-ESP32_IP    = "10.10.49.144"
-ESP32_PORT  = 82
-SERVER_IP   = "10.10.49.146"
+def get_server_local_ip():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        print(f"[NETWORK] IP server laptop: {ip}")
+        return ip
+    except OSError:
+        print("[NETWORK] Không tìm được IP laptop! Dùng IP dự phòng.")
+        return "10.134.242.215"
+    finally:
+        sock.close()
+
+SERVER_IP   = get_server_local_ip()
 SERVER_PORT = 8000
 TTS_DIR     = os.path.join(BASE_DIR, "tts_cache")
 os.makedirs(TTS_DIR, exist_ok=True)
 
-# ESP32_URL            = "http://10.10.49.160:81/stream"
-ESP32_URL            = 0
-CONFIDENCE_THRESHOLD = 0.5
+# Windows tự phân giải các hostname NetBIOS do ESP32 công bố.
+ESP32_IP             = "192.168.2.183"
+ESP32_PORT           = 82
+ESP32_CAM_IP         = "signcam"
+ESP32_CAM_PORT       = 81
+ESP32_URL            = f"http://{ESP32_CAM_IP}:{ESP32_CAM_PORT}/stream"
+
+# Các ngưỡng nhận diện AI
+CONFIDENCE_THRESHOLD = 0.7
 START_THRESHOLD      = 0.065
 STOP_THRESHOLD       = 0.04
 MIN_ACTION_FRAMES    = 18
-PAUSE_THRESHOLD      = 5.0
-STOP_PATIENCE_FRAMES = 7
+PAUSE_THRESHOLD      = 2.0
+STOP_PATIENCE_FRAMES = 15
+
+_latest_frame = None
+_tts_lock = threading.Lock()
 
 # ============= TTS + LCD =============
 def speak_on_esp32(sentence: str):
-    try:
-        safe_text = urllib.parse.quote(sentence)
-        lcd_url   = f"http://{ESP32_IP}:{ESP32_PORT}/display?text={safe_text}"
+    with _tts_lock:
         try:
-            requests.get(lcd_url, timeout=2)
-            print(f"[LCD] Đã bắn chữ: {sentence}")
+            file_hash = hashlib.md5(sentence.encode("utf-8")).hexdigest()[:8]
+            mp3_filename = f"tts_{file_hash}.mp3"
+            wav_filename = f"tts_{file_hash}.wav"
+
+            mp3_path = os.path.join(TTS_DIR, mp3_filename)
+            wav_path = os.path.join(TTS_DIR, wav_filename)
+
+            safe_text = urllib.parse.quote(sentence)
+            lcd_url   = f"http://{ESP32_IP}:{ESP32_PORT}/display?text={safe_text}"
+
+            headers = {"Connection": "close"}
+
+            try:
+                requests.get(lcd_url, headers=headers, timeout=4)
+                print(f"[LCD] Đã bắn chữ: {sentence}")
+            except Exception as e:
+                print(f"[LCD ERROR] {e}")
+
+            if not os.path.exists(wav_path):
+                if not os.path.exists(mp3_path):
+                    tts = gTTS(text=sentence, lang='en')
+                    tts.save(mp3_path)
+
+                print("[AUDIO] Đang giải mã sang WAV...")
+                sound = AudioSegment.from_mp3(mp3_path)
+                sound = sound.set_channels(1).set_frame_rate(16000)
+                sound.export(wav_path, format="wav")
+                print(f"[TTS] Tạo file mới: {wav_filename}")
+            else:
+                print(f"[TTS] Dùng cache: {wav_filename}")
+
+            audio_url = f"http://{SERVER_IP}:{SERVER_PORT}/tts/{wav_filename}"
+            esp32_url = f"http://{ESP32_IP}:{ESP32_PORT}/play?url={audio_url}"
+
+            resp = requests.get(esp32_url, headers=headers, timeout=5)
+            print(f"[TTS] ESP32 response: {resp.text}")
         except Exception as e:
-            print(f"[LCD ERROR] {e}")
-
-        mp3_path = os.path.join(TTS_DIR, "latest.mp3")
-        tts = gTTS(text=sentence, lang='en')
-        tts.save(mp3_path)
-        print(f"[TTS] Đã tạo file: {mp3_path}")
-
-        audio_url = f"http://{SERVER_IP}:{SERVER_PORT}/tts/latest.mp3"
-        esp32_url = f"http://{ESP32_IP}:{ESP32_PORT}/play?url={audio_url}"
-        resp = requests.get(esp32_url, timeout=10)
-        print(f"[TTS] ESP32 response: {resp.text}")
-    except Exception as e:
-        print(f"[TTS ERROR] {e}")
+            print(f"[TTS ERROR] {e}")
 
 def speak_async(sentence: str):
     threading.Thread(target=speak_on_esp32, args=(sentence,), daemon=True).start()
@@ -157,7 +201,7 @@ def _local_nlg_worker(keywords: list[str]):
         with torch.no_grad():
             outputs = nlg_model.generate(input_ids, max_length=64, num_beams=4)
         natural_sentence = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        print(f"🤖 KẾT QUẢ DỊCH: {natural_sentence}\n")
+        print(f"KẾT QUẢ DỊCH: {natural_sentence}\n")
         broadcast({"event": "translation_success", "natural_sentence": natural_sentence})
         speak_async(natural_sentence)
     except Exception as exc:
@@ -223,6 +267,7 @@ class DisplayState:
         self.is_recording  = False
         self.action        = None
         self.conf          = 0.0
+        self.top3          = []
         self.sentence      = []
         self.fps           = 0.0
 
@@ -239,6 +284,7 @@ class DisplayState:
                 is_recording = self.is_recording,
                 action       = self.action,
                 conf         = self.conf,
+                top3         = list(self.top3),
                 sentence     = list(self.sentence),
                 fps          = self.fps,
             )
@@ -349,15 +395,16 @@ def _holistic_worker(stream: VideoStreamThread,
                 continue
 
             # ── MediaPipe ────────────────────────────────────────────────
-            # Resize ở đây thay vì VideoStreamThread để giữ thread đó gọn
-            frame   = cv2.resize(frame, (640, 480))
+            # Khung hình từ mạch OV3660 gửi sang đã là 320x320, KHÔNG cần bóp méo nữa
             rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             rgb.flags.writeable = False
-            results = holistic.process(rgb)          # ← phần nặng nhất
+
+            # Chạy AI trực tiếp trên ảnh nhỏ 320x320 (cực nhanh)
+            results = holistic.process(rgb)
             rgb.flags.writeable = True
             image   = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
-            # Chỉ vẽ tay, bỏ mặt và pose
+            # Chỉ vẽ tay lên ảnh gốc 320x320
             if results.left_hand_landmarks:
                 mp_drawing.draw_landmarks(
                     image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS
@@ -366,6 +413,10 @@ def _holistic_worker(stream: VideoStreamThread,
                 mp_drawing.draw_landmarks(
                     image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS
                 )
+
+            # ── ĐỒNG BỘ GIAO DIỆN ───────────────────────────────────────
+            # Xuất frame 320x320 để Android nhận đúng kích thước mong muốn
+            display_image = cv2.resize(image, (320, 320))
 
             # ── Keypoints & motion ───────────────────────────────────────
             raw_kp = extract_raw_keypoints(results)
@@ -384,7 +435,8 @@ def _holistic_worker(stream: VideoStreamThread,
                     broadcast({"event": "recording_start"})
             else:
                 action_frames.append(raw_kp)
-                cv2.rectangle(image, (4, 4), (635, 475), (0, 0, 200), 4)
+                # Vẽ viền đỏ ghi hình lên ảnh to (display_image)
+                cv2.rectangle(display_image, (4, 4), (635, 475), (0, 0, 200), 4)
 
                 if current_motion < STOP_THRESHOLD:
                     frames_below_threshold += 1
@@ -455,6 +507,7 @@ def _holistic_worker(stream: VideoStreamThread,
                                 action   = current_action,
                                 conf     = display_conf,
                                 sentence = list(sentence),
+                                top3     = top3_results,
                             )
 
                         try:
@@ -478,7 +531,7 @@ def _holistic_worker(stream: VideoStreamThread,
                 call_nlg_async(sentence.copy())
                 sentence.clear()
                 current_action = None
-                display_state.set(action=None, conf=0.0, sentence=[])
+                display_state.set(action=None, conf=0.0, sentence=[], top3=[])
 
             # ── FPS ──────────────────────────────────────────────────────
             now = time.time()
@@ -488,18 +541,19 @@ def _holistic_worker(stream: VideoStreamThread,
             # ── Đẩy frame đã annotate lên DisplayState ───────────────────
             # Main thread lấy ra imshow mà không cần biết gì về logic
             display_state.set(
-                annotated    = image,
+                annotated    = display_image,
                 motion       = current_motion,
                 is_recording = is_recording,
                 action       = current_action if not is_recording else None,
                 conf         = display_conf   if not is_recording else 0.0,
                 sentence     = list(sentence),
+                top3         = ([] if is_recording else list(display_state.top3)),
                 fps          = float(np.mean(fps_buf)),
             )
 
 
 # ============= SIDEBAR =============
-def draw_sidebar(fps, motion, is_recording, current_action, confidence, sentence) -> np.ndarray:
+def draw_sidebar(fps, motion, is_recording, current_action, confidence, sentence, top3=None) -> np.ndarray:
     sb = np.zeros((480, 320, 3), dtype=np.uint8)
     sb[:] = (20, 20, 20)
     font  = cv2.FONT_HERSHEY_SIMPLEX
@@ -521,6 +575,18 @@ def draw_sidebar(fps, motion, is_recording, current_action, confidence, sentence
         cv2.putText(sb, f"Conf: {confidence * 100:.1f}%", (20, 200), font, 0.5, (180, 255, 180), 1)
     else:
         cv2.rectangle(sb, (10, 128), (310, 210), (40, 40, 40), -1)
+
+    # Hiển thị top-3 gợi ý
+    if top3:
+        try:
+            y_top = 220
+            cv2.putText(sb, "Top 3:", (15, y_top - 12), font, 0.55, (200, 200, 200), 1)
+            for i, item in enumerate(top3[:3]):
+                word = item.get("word", "")
+                conf = item.get("confidence", 0.0)
+                cv2.putText(sb, f"{i+1}. {word} ({conf*100:.1f}%)", (18, y_top + i*24), font, 0.55, (200, 220, 255), 1)
+        except Exception:
+            pass
 
     cv2.putText(sb, "SENTENCE", (10, 240), font, 0.55, (200, 200, 200), 1)
     cv2.line(sb, (10, 248), (310, 248), (60, 60, 60), 1)
@@ -565,33 +631,24 @@ def run_camera():
     ).start()
     print("[CAM] HolisticWorker started.")
 
-    # ── [Main thread] Chỉ display, không bao giờ block ───────────────────
-    # imshow PHẢI chạy trên main thread (yêu cầu của OpenCV GUI)
-    blank = np.zeros((480, 640, 3), dtype=np.uint8)
+    # ── [Main thread] Chỉ xử lý frame, KHÔNG hiển thị GUI (Headless) ──
+    blank = np.zeros((320, 320, 3), dtype=np.uint8)
+    global _latest_frame
 
     while True:
         snap = display_state.snapshot()
 
         frame = snap["annotated"] if snap["annotated"] is not None else blank
-        sidebar = draw_sidebar(
-            snap["fps"],
-            snap["motion"],
-            snap["is_recording"],
-            snap["action"],
-            snap["conf"],
-            snap["sentence"],
-        )
-        display = np.hstack((frame, sidebar))
-        cv2.imshow("Sign Language AI", display)
 
-        # waitKey(1): nhả ~1ms cho GUI event loop, không block logic
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ret:
+            _latest_frame = buffer.tobytes()
+
+        time.sleep(0.03)
 
     # Dọn dẹp
     _infer_queue.put(None)   # sentinel dừng InferenceWorker
     stream.stop()
-    cv2.destroyAllWindows()
     print("[CAM] Đã dừng.")
 
 
@@ -611,6 +668,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/tts", StaticFiles(directory=TTS_DIR), name="tts")
+
+
+def frame_generator():
+    """Liên tục lấy frame mới nhất và đẩy ra luồng HTTP."""
+    global _latest_frame
+    while True:
+        if _latest_frame is not None:
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + _latest_frame + b'\r\n'
+            )
+        time.sleep(0.03)
+
+
+@app.get("/video_feed")
+async def video_feed():
+    """Endpoint để App Android gọi vào lấy video."""
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 @app.websocket("/ws/sign-language")
 async def ws_endpoint(websocket: WebSocket):

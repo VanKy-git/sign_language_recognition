@@ -38,7 +38,7 @@ Data/model/hybrid_model_92tu.keras
 Data/v2/__pycache__/
 Data/v2/__pycache__/**
 Data/v2/**/*.pyc
-
+Data/v2/tts_cache/
 # Ignore numpy data files to avoid committing large binary arrays
 Data/*.npy
 Data/**/*.npy
